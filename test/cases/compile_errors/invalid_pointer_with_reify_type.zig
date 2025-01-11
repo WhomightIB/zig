@@ -1,5 +1,5 @@
 export fn entry() void {
-    _ = @Type(.{ .Pointer = .{
+    _ = @Type(.{ .pointer = .{
         .size = .One,
         .is_const = false,
         .is_volatile = false,
@@ -8,7 +8,7 @@ export fn entry() void {
         .child = u8,
         .is_allowzero = false,
         .sentinel = &@as(u8, 0),
-    }});
+    } });
 }
 
 // error

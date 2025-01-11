@@ -3,127 +3,230 @@ const Step = std.Build.Step;
 const InstallDir = std.Build.InstallDir;
 const InstallArtifact = @This();
 const fs = std.fs;
-
-pub const base_id = .install_artifact;
+const LazyPath = std.Build.LazyPath;
 
 step: Step,
-artifact: *Step.Compile,
-dest_dir: InstallDir,
-pdb_dir: ?InstallDir,
-h_dir: ?InstallDir,
-/// If non-null, adds additional path components relative to dest_dir, and
-/// overrides the basename of the Compile step.
-dest_sub_path: ?[]const u8,
 
-pub fn create(owner: *std.Build, artifact: *Step.Compile) *InstallArtifact {
-    const self = owner.allocator.create(InstallArtifact) catch @panic("OOM");
-    self.* = InstallArtifact{
+dest_dir: ?InstallDir,
+dest_sub_path: []const u8,
+emitted_bin: ?LazyPath,
+
+implib_dir: ?InstallDir,
+emitted_implib: ?LazyPath,
+
+pdb_dir: ?InstallDir,
+emitted_pdb: ?LazyPath,
+
+h_dir: ?InstallDir,
+emitted_h: ?LazyPath,
+
+dylib_symlinks: ?DylibSymlinkInfo,
+
+artifact: *Step.Compile,
+
+const DylibSymlinkInfo = struct {
+    major_only_filename: []const u8,
+    name_only_filename: []const u8,
+};
+
+pub const base_id: Step.Id = .install_artifact;
+
+pub const Options = struct {
+    /// Which installation directory to put the main output file into.
+    dest_dir: Dir = .default,
+    pdb_dir: Dir = .default,
+    h_dir: Dir = .default,
+    implib_dir: Dir = .default,
+
+    /// Whether to install symlinks along with dynamic libraries.
+    dylib_symlinks: ?bool = null,
+    /// If non-null, adds additional path components relative to bin dir, and
+    /// overrides the basename of the Compile step for installation purposes.
+    dest_sub_path: ?[]const u8 = null,
+
+    pub const Dir = union(enum) {
+        disabled,
+        default,
+        override: InstallDir,
+    };
+};
+
+pub fn create(owner: *std.Build, artifact: *Step.Compile, options: Options) *InstallArtifact {
+    const install_artifact = owner.allocator.create(InstallArtifact) catch @panic("OOM");
+    const dest_dir: ?InstallDir = switch (options.dest_dir) {
+        .disabled => null,
+        .default => switch (artifact.kind) {
+            .obj => @panic("object files have no standard installation procedure"),
+            .exe, .@"test" => .bin,
+            .lib => if (artifact.isDll()) .bin else .lib,
+        },
+        .override => |o| o,
+    };
+    install_artifact.* = .{
         .step = Step.init(.{
             .id = base_id,
             .name = owner.fmt("install {s}", .{artifact.name}),
             .owner = owner,
             .makeFn = make,
         }),
-        .artifact = artifact,
-        .dest_dir = artifact.override_dest_dir orelse switch (artifact.kind) {
-            .obj => @panic("Cannot install a .obj build artifact."),
-            .exe, .@"test" => InstallDir{ .bin = {} },
-            .lib => InstallDir{ .lib = {} },
+        .dest_dir = dest_dir,
+        .pdb_dir = switch (options.pdb_dir) {
+            .disabled => null,
+            .default => if (artifact.producesPdbFile()) dest_dir else null,
+            .override => |o| o,
         },
-        .pdb_dir = if (artifact.producesPdbFile()) blk: {
-            if (artifact.kind == .exe or artifact.kind == .@"test") {
-                break :blk InstallDir{ .bin = {} };
-            } else {
-                break :blk InstallDir{ .lib = {} };
-            }
-        } else null,
-        .h_dir = if (artifact.kind == .lib and artifact.emit_h) .header else null,
-        .dest_sub_path = null,
-    };
-    self.step.dependOn(&artifact.step);
+        .h_dir = switch (options.h_dir) {
+            .disabled => null,
+            .default => if (artifact.kind == .lib) .header else null,
+            .override => |o| o,
+        },
+        .implib_dir = switch (options.implib_dir) {
+            .disabled => null,
+            .default => if (artifact.producesImplib()) .lib else null,
+            .override => |o| o,
+        },
 
-    owner.pushInstalledFile(self.dest_dir, artifact.out_filename);
-    if (self.artifact.isDynamicLibrary()) {
-        if (artifact.major_only_filename) |name| {
-            owner.pushInstalledFile(.lib, name);
-        }
-        if (artifact.name_only_filename) |name| {
-            owner.pushInstalledFile(.lib, name);
-        }
-        if (self.artifact.target.isWindows()) {
-            owner.pushInstalledFile(.lib, artifact.out_lib_filename);
-        }
-    }
-    if (self.pdb_dir) |pdb_dir| {
-        owner.pushInstalledFile(pdb_dir, artifact.out_pdb_filename);
-    }
-    if (self.h_dir) |h_dir| {
-        owner.pushInstalledFile(h_dir, artifact.out_h_filename);
-    }
-    return self;
+        .dylib_symlinks = if (options.dylib_symlinks orelse (dest_dir != null and
+            artifact.isDynamicLibrary() and
+            artifact.version != null and
+            std.Build.wantSharedLibSymLinks(artifact.rootModuleTarget()))) .{
+            .major_only_filename = artifact.major_only_filename.?,
+            .name_only_filename = artifact.name_only_filename.?,
+        } else null,
+
+        .dest_sub_path = options.dest_sub_path orelse artifact.out_filename,
+
+        .emitted_bin = null,
+        .emitted_pdb = null,
+        .emitted_h = null,
+        .emitted_implib = null,
+
+        .artifact = artifact,
+    };
+
+    install_artifact.step.dependOn(&artifact.step);
+
+    if (install_artifact.dest_dir != null) install_artifact.emitted_bin = artifact.getEmittedBin();
+    if (install_artifact.pdb_dir != null) install_artifact.emitted_pdb = artifact.getEmittedPdb();
+    // https://github.com/ziglang/zig/issues/9698
+    //if (install_artifact.h_dir != null) install_artifact.emitted_h = artifact.getEmittedH();
+    if (install_artifact.implib_dir != null) install_artifact.emitted_implib = artifact.getEmittedImplib();
+
+    return install_artifact;
 }
 
-fn make(step: *Step, prog_node: *std.Progress.Node) !void {
-    _ = prog_node;
-    const self = @fieldParentPtr(InstallArtifact, "step", step);
-    const src_builder = self.artifact.step.owner;
-    const dest_builder = step.owner;
-
-    const dest_sub_path = if (self.dest_sub_path) |sub_path| sub_path else self.artifact.out_filename;
-    const full_dest_path = dest_builder.getInstallPath(self.dest_dir, dest_sub_path);
+fn make(step: *Step, options: Step.MakeOptions) !void {
+    _ = options;
+    const install_artifact: *InstallArtifact = @fieldParentPtr("step", step);
+    const b = step.owner;
     const cwd = fs.cwd();
 
     var all_cached = true;
 
-    {
-        const full_src_path = self.artifact.getOutputSource().getPath(src_builder);
-        const p = fs.Dir.updateFile(cwd, full_src_path, cwd, full_dest_path, .{}) catch |err| {
+    if (install_artifact.dest_dir) |dest_dir| {
+        const full_dest_path = b.getInstallPath(dest_dir, install_artifact.dest_sub_path);
+        const src_path = install_artifact.emitted_bin.?.getPath3(b, step);
+        const p = fs.Dir.updateFile(src_path.root_dir.handle, src_path.sub_path, cwd, full_dest_path, .{}) catch |err| {
             return step.fail("unable to update file from '{s}' to '{s}': {s}", .{
-                full_src_path, full_dest_path, @errorName(err),
+                src_path.sub_path, full_dest_path, @errorName(err),
+            });
+        };
+        all_cached = all_cached and p == .fresh;
+
+        if (install_artifact.dylib_symlinks) |dls| {
+            try Step.Compile.doAtomicSymLinks(step, full_dest_path, dls.major_only_filename, dls.name_only_filename);
+        }
+
+        install_artifact.artifact.installed_path = full_dest_path;
+    }
+
+    if (install_artifact.implib_dir) |implib_dir| {
+        const src_path = install_artifact.emitted_implib.?.getPath3(b, step);
+        const full_implib_path = b.getInstallPath(implib_dir, fs.path.basename(src_path.sub_path));
+        const p = fs.Dir.updateFile(src_path.root_dir.handle, src_path.sub_path, cwd, full_implib_path, .{}) catch |err| {
+            return step.fail("unable to update file from '{s}' to '{s}': {s}", .{
+                src_path.sub_path, full_implib_path, @errorName(err),
             });
         };
         all_cached = all_cached and p == .fresh;
     }
 
-    if (self.artifact.isDynamicLibrary() and
-        self.artifact.version != null and
-        self.artifact.target.wantSharedLibSymLinks())
-    {
-        try Step.Compile.doAtomicSymLinks(step, full_dest_path, self.artifact.major_only_filename.?, self.artifact.name_only_filename.?);
-    }
-    if (self.artifact.isDynamicLibrary() and
-        self.artifact.target.isWindows() and
-        self.artifact.emit_implib != .no_emit)
-    {
-        const full_src_path = self.artifact.getOutputLibSource().getPath(src_builder);
-        const full_implib_path = dest_builder.getInstallPath(self.dest_dir, self.artifact.out_lib_filename);
-        const p = fs.Dir.updateFile(cwd, full_src_path, cwd, full_implib_path, .{}) catch |err| {
+    if (install_artifact.pdb_dir) |pdb_dir| {
+        const src_path = install_artifact.emitted_pdb.?.getPath3(b, step);
+        const full_pdb_path = b.getInstallPath(pdb_dir, fs.path.basename(src_path.sub_path));
+        const p = fs.Dir.updateFile(src_path.root_dir.handle, src_path.sub_path, cwd, full_pdb_path, .{}) catch |err| {
             return step.fail("unable to update file from '{s}' to '{s}': {s}", .{
-                full_src_path, full_implib_path, @errorName(err),
+                src_path.sub_path, full_pdb_path, @errorName(err),
             });
         };
         all_cached = all_cached and p == .fresh;
     }
-    if (self.pdb_dir) |pdb_dir| {
-        const full_src_path = self.artifact.getOutputPdbSource().getPath(src_builder);
-        const full_pdb_path = dest_builder.getInstallPath(pdb_dir, self.artifact.out_pdb_filename);
-        const p = fs.Dir.updateFile(cwd, full_src_path, cwd, full_pdb_path, .{}) catch |err| {
-            return step.fail("unable to update file from '{s}' to '{s}': {s}", .{
-                full_src_path, full_pdb_path, @errorName(err),
-            });
+
+    if (install_artifact.h_dir) |h_dir| {
+        if (install_artifact.emitted_h) |emitted_h| {
+            const src_path = emitted_h.getPath3(b, step);
+            const full_h_path = b.getInstallPath(h_dir, fs.path.basename(src_path.sub_path));
+            const p = fs.Dir.updateFile(src_path.root_dir.handle, src_path.sub_path, cwd, full_h_path, .{}) catch |err| {
+                return step.fail("unable to update file from '{s}' to '{s}': {s}", .{
+                    src_path.sub_path, full_h_path, @errorName(err),
+                });
+            };
+            all_cached = all_cached and p == .fresh;
+        }
+
+        for (install_artifact.artifact.installed_headers.items) |installation| switch (installation) {
+            .file => |file| {
+                const src_path = file.source.getPath3(b, step);
+                const full_h_path = b.getInstallPath(h_dir, file.dest_rel_path);
+                const p = fs.Dir.updateFile(src_path.root_dir.handle, src_path.sub_path, cwd, full_h_path, .{}) catch |err| {
+                    return step.fail("unable to update file from '{s}' to '{s}': {s}", .{
+                        src_path.sub_path, full_h_path, @errorName(err),
+                    });
+                };
+                all_cached = all_cached and p == .fresh;
+            },
+            .directory => |dir| {
+                const src_dir_path = dir.source.getPath3(b, step);
+                const full_h_prefix = b.getInstallPath(h_dir, dir.dest_rel_path);
+
+                var src_dir = src_dir_path.root_dir.handle.openDir(src_dir_path.sub_path, .{ .iterate = true }) catch |err| {
+                    return step.fail("unable to open source directory '{s}': {s}", .{
+                        src_dir_path.sub_path, @errorName(err),
+                    });
+                };
+                defer src_dir.close();
+
+                var it = try src_dir.walk(b.allocator);
+                next_entry: while (try it.next()) |entry| {
+                    for (dir.options.exclude_extensions) |ext| {
+                        if (std.mem.endsWith(u8, entry.path, ext)) continue :next_entry;
+                    }
+                    if (dir.options.include_extensions) |incs| {
+                        for (incs) |inc| {
+                            if (std.mem.endsWith(u8, entry.path, inc)) break;
+                        } else {
+                            continue :next_entry;
+                        }
+                    }
+
+                    const src_entry_path = src_dir_path.join(b.allocator, entry.path) catch @panic("OOM");
+                    const full_dest_path = b.pathJoin(&.{ full_h_prefix, entry.path });
+                    switch (entry.kind) {
+                        .directory => try cwd.makePath(full_dest_path),
+                        .file => {
+                            const p = fs.Dir.updateFile(src_entry_path.root_dir.handle, src_entry_path.sub_path, cwd, full_dest_path, .{}) catch |err| {
+                                return step.fail("unable to update file from '{s}' to '{s}': {s}", .{
+                                    src_entry_path.sub_path, full_dest_path, @errorName(err),
+                                });
+                            };
+                            all_cached = all_cached and p == .fresh;
+                        },
+                        else => continue,
+                    }
+                }
+            },
         };
-        all_cached = all_cached and p == .fresh;
     }
-    if (self.h_dir) |h_dir| {
-        const full_src_path = self.artifact.getOutputHSource().getPath(src_builder);
-        const full_h_path = dest_builder.getInstallPath(h_dir, self.artifact.out_h_filename);
-        const p = fs.Dir.updateFile(cwd, full_src_path, cwd, full_h_path, .{}) catch |err| {
-            return step.fail("unable to update file from '{s}' to '{s}': {s}", .{
-                full_src_path, full_h_path, @errorName(err),
-            });
-        };
-        all_cached = all_cached and p == .fresh;
-    }
-    self.artifact.installed_path = full_dest_path;
+
     step.result_cached = all_cached;
 }
