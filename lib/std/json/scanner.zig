@@ -33,6 +33,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const assert = std.debug.assert;
+const BitStack = std.BitStack;
 
 /// Scan the input and check for malformed JSON.
 /// On `SyntaxError` or `UnexpectedEndOfInput`, returns `false`.
@@ -193,7 +194,7 @@ pub const TokenType = enum {
 /// to get meaningful information from this.
 pub const Diagnostics = struct {
     line_number: u64 = 1,
-    line_start_cursor: usize = @bitCast(usize, @as(isize, -1)), // Start just "before" the input buffer to get a 1-based column for line 1.
+    line_start_cursor: usize = @as(usize, @bitCast(@as(isize, -1))), // Start just "before" the input buffer to get a 1-based column for line 1.
     total_bytes_before_current_input: u64 = 0,
     cursor_pointer: *const usize = undefined,
 
@@ -337,7 +338,7 @@ pub fn Reader(comptime buffer_size: usize, comptime ReaderType: type) type {
             }
         }
         /// Like `std.json.Scanner.skipUntilStackHeight()` but handles `error.BufferUnderrun`.
-        pub fn skipUntilStackHeight(self: *@This(), terminal_stack_height: u32) NextError!void {
+        pub fn skipUntilStackHeight(self: *@This(), terminal_stack_height: usize) NextError!void {
             while (true) {
                 return self.scanner.skipUntilStackHeight(terminal_stack_height) catch |err| switch (err) {
                     error.BufferUnderrun => {
@@ -350,11 +351,11 @@ pub fn Reader(comptime buffer_size: usize, comptime ReaderType: type) type {
         }
 
         /// Calls `std.json.Scanner.stackHeight`.
-        pub fn stackHeight(self: *const @This()) u32 {
+        pub fn stackHeight(self: *const @This()) usize {
             return self.scanner.stackHeight();
         }
         /// Calls `std.json.Scanner.ensureTotalStackCapacity`.
-        pub fn ensureTotalStackCapacity(self: *@This(), height: u32) Allocator.Error!void {
+        pub fn ensureTotalStackCapacity(self: *@This(), height: usize) Allocator.Error!void {
             try self.scanner.ensureTotalStackCapacity(height);
         }
 
@@ -413,7 +414,7 @@ pub const Scanner = struct {
     string_is_object_key: bool = false,
     stack: BitStack,
     value_start: usize = undefined,
-    unicode_code_point: u21 = undefined,
+    utf16_code_units: [2]u16 = undefined,
 
     input: []const u8 = "",
     cursor: usize = 0,
@@ -654,7 +655,7 @@ pub const Scanner = struct {
 
     /// Skip tokens until an `.object_end` or `.array_end` token results in a `stackHeight()` equal the given stack height.
     /// Unlike `skipValue()`, this function is available in streaming mode.
-    pub fn skipUntilStackHeight(self: *@This(), terminal_stack_height: u32) NextError!void {
+    pub fn skipUntilStackHeight(self: *@This(), terminal_stack_height: usize) NextError!void {
         while (true) {
             switch (try self.next()) {
                 .object_end, .array_end => {
@@ -667,13 +668,13 @@ pub const Scanner = struct {
     }
 
     /// The depth of `{}` or `[]` nesting levels at the current position.
-    pub fn stackHeight(self: *const @This()) u32 {
+    pub fn stackHeight(self: *const @This()) usize {
         return self.stack.bit_len;
     }
 
     /// Pre allocate memory to hold the given number of nesting levels.
     /// `stackHeight()` up to the given number will not cause allocations.
-    pub fn ensureTotalStackCapacity(self: *@This(), height: u32) Allocator.Error!void {
+    pub fn ensureTotalStackCapacity(self: *@This(), height: usize) Allocator.Error!void {
         try self.stack.ensureTotalCapacity(height);
     }
 
@@ -896,7 +897,7 @@ pub const Scanner = struct {
                 },
                 .number_post_dot => {
                     if (self.cursor >= self.input.len) return self.endOfBufferInNumber(false);
-                    switch (try self.expectByte()) {
+                    switch (self.input[self.cursor]) {
                         '0'...'9' => {
                             self.cursor += 1;
                             self.state = .number_frac;
@@ -1031,7 +1032,8 @@ pub const Scanner = struct {
                     return error.BufferUnderrun;
                 },
                 .string_backslash => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         '"', '\\', '/' => {
                             // Since these characters now represent themselves literally,
                             // we can simply begin the next plaintext slice here.
@@ -1079,16 +1081,17 @@ pub const Scanner = struct {
                     }
                 },
                 .string_backslash_u => {
-                    const c = try self.expectByte();
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    const c = self.input[self.cursor];
                     switch (c) {
                         '0'...'9' => {
-                            self.unicode_code_point = @as(u21, c - '0') << 12;
+                            self.utf16_code_units[0] = @as(u16, c - '0') << 12;
                         },
                         'A'...'F' => {
-                            self.unicode_code_point = @as(u21, c - 'A' + 10) << 12;
+                            self.utf16_code_units[0] = @as(u16, c - 'A' + 10) << 12;
                         },
                         'a'...'f' => {
-                            self.unicode_code_point = @as(u21, c - 'a' + 10) << 12;
+                            self.utf16_code_units[0] = @as(u16, c - 'a' + 10) << 12;
                         },
                         else => return error.SyntaxError,
                     }
@@ -1097,16 +1100,17 @@ pub const Scanner = struct {
                     continue :state_loop;
                 },
                 .string_backslash_u_1 => {
-                    const c = try self.expectByte();
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    const c = self.input[self.cursor];
                     switch (c) {
                         '0'...'9' => {
-                            self.unicode_code_point |= @as(u21, c - '0') << 8;
+                            self.utf16_code_units[0] |= @as(u16, c - '0') << 8;
                         },
                         'A'...'F' => {
-                            self.unicode_code_point |= @as(u21, c - 'A' + 10) << 8;
+                            self.utf16_code_units[0] |= @as(u16, c - 'A' + 10) << 8;
                         },
                         'a'...'f' => {
-                            self.unicode_code_point |= @as(u21, c - 'a' + 10) << 8;
+                            self.utf16_code_units[0] |= @as(u16, c - 'a' + 10) << 8;
                         },
                         else => return error.SyntaxError,
                     }
@@ -1115,16 +1119,17 @@ pub const Scanner = struct {
                     continue :state_loop;
                 },
                 .string_backslash_u_2 => {
-                    const c = try self.expectByte();
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    const c = self.input[self.cursor];
                     switch (c) {
                         '0'...'9' => {
-                            self.unicode_code_point |= @as(u21, c - '0') << 4;
+                            self.utf16_code_units[0] |= @as(u16, c - '0') << 4;
                         },
                         'A'...'F' => {
-                            self.unicode_code_point |= @as(u21, c - 'A' + 10) << 4;
+                            self.utf16_code_units[0] |= @as(u16, c - 'A' + 10) << 4;
                         },
                         'a'...'f' => {
-                            self.unicode_code_point |= @as(u21, c - 'a' + 10) << 4;
+                            self.utf16_code_units[0] |= @as(u16, c - 'a' + 10) << 4;
                         },
                         else => return error.SyntaxError,
                     }
@@ -1133,38 +1138,35 @@ pub const Scanner = struct {
                     continue :state_loop;
                 },
                 .string_backslash_u_3 => {
-                    const c = try self.expectByte();
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    const c = self.input[self.cursor];
                     switch (c) {
                         '0'...'9' => {
-                            self.unicode_code_point |= c - '0';
+                            self.utf16_code_units[0] |= c - '0';
                         },
                         'A'...'F' => {
-                            self.unicode_code_point |= c - 'A' + 10;
+                            self.utf16_code_units[0] |= c - 'A' + 10;
                         },
                         'a'...'f' => {
-                            self.unicode_code_point |= c - 'a' + 10;
+                            self.utf16_code_units[0] |= c - 'a' + 10;
                         },
                         else => return error.SyntaxError,
                     }
                     self.cursor += 1;
-                    switch (self.unicode_code_point) {
-                        0xD800...0xDBFF => {
-                            // High surrogate half.
-                            self.unicode_code_point = 0x10000 | (self.unicode_code_point << 10);
-                            self.state = .string_surrogate_half;
-                            continue :state_loop;
-                        },
-                        0xDC00...0xDFFF => return error.SyntaxError, // Unexpected low surrogate half.
-                        else => {
-                            // Code point from a single UTF-16 code unit.
-                            self.value_start = self.cursor;
-                            self.state = .string;
-                            return self.partialStringCodepoint();
-                        },
+                    if (std.unicode.utf16IsHighSurrogate(self.utf16_code_units[0])) {
+                        self.state = .string_surrogate_half;
+                        continue :state_loop;
+                    } else if (std.unicode.utf16IsLowSurrogate(self.utf16_code_units[0])) {
+                        return error.SyntaxError; // Unexpected low surrogate half.
+                    } else {
+                        self.value_start = self.cursor;
+                        self.state = .string;
+                        return partialStringCodepoint(self.utf16_code_units[0]);
                     }
                 },
                 .string_surrogate_half => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         '\\' => {
                             self.cursor += 1;
                             self.state = .string_surrogate_half_backslash;
@@ -1174,7 +1176,8 @@ pub const Scanner = struct {
                     }
                 },
                 .string_surrogate_half_backslash => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         'u' => {
                             self.cursor += 1;
                             self.state = .string_surrogate_half_backslash_u;
@@ -1184,9 +1187,11 @@ pub const Scanner = struct {
                     }
                 },
                 .string_surrogate_half_backslash_u => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         'D', 'd' => {
                             self.cursor += 1;
+                            self.utf16_code_units[1] = 0xD << 12;
                             self.state = .string_surrogate_half_backslash_u_1;
                             continue :state_loop;
                         },
@@ -1194,17 +1199,18 @@ pub const Scanner = struct {
                     }
                 },
                 .string_surrogate_half_backslash_u_1 => {
-                    const c = try self.expectByte();
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    const c = self.input[self.cursor];
                     switch (c) {
                         'C'...'F' => {
                             self.cursor += 1;
-                            self.unicode_code_point |= @as(u21, c - 'C') << 8;
+                            self.utf16_code_units[1] |= @as(u16, c - 'A' + 10) << 8;
                             self.state = .string_surrogate_half_backslash_u_2;
                             continue :state_loop;
                         },
                         'c'...'f' => {
                             self.cursor += 1;
-                            self.unicode_code_point |= @as(u21, c - 'c') << 8;
+                            self.utf16_code_units[1] |= @as(u16, c - 'a' + 10) << 8;
                             self.state = .string_surrogate_half_backslash_u_2;
                             continue :state_loop;
                         },
@@ -1212,23 +1218,24 @@ pub const Scanner = struct {
                     }
                 },
                 .string_surrogate_half_backslash_u_2 => {
-                    const c = try self.expectByte();
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    const c = self.input[self.cursor];
                     switch (c) {
                         '0'...'9' => {
                             self.cursor += 1;
-                            self.unicode_code_point |= @as(u21, c - '0') << 4;
+                            self.utf16_code_units[1] |= @as(u16, c - '0') << 4;
                             self.state = .string_surrogate_half_backslash_u_3;
                             continue :state_loop;
                         },
                         'A'...'F' => {
                             self.cursor += 1;
-                            self.unicode_code_point |= @as(u21, c - 'A' + 10) << 4;
+                            self.utf16_code_units[1] |= @as(u16, c - 'A' + 10) << 4;
                             self.state = .string_surrogate_half_backslash_u_3;
                             continue :state_loop;
                         },
                         'a'...'f' => {
                             self.cursor += 1;
-                            self.unicode_code_point |= @as(u21, c - 'a' + 10) << 4;
+                            self.utf16_code_units[1] |= @as(u16, c - 'a' + 10) << 4;
                             self.state = .string_surrogate_half_backslash_u_3;
                             continue :state_loop;
                         },
@@ -1236,27 +1243,30 @@ pub const Scanner = struct {
                     }
                 },
                 .string_surrogate_half_backslash_u_3 => {
-                    const c = try self.expectByte();
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    const c = self.input[self.cursor];
                     switch (c) {
                         '0'...'9' => {
-                            self.unicode_code_point |= c - '0';
+                            self.utf16_code_units[1] |= c - '0';
                         },
                         'A'...'F' => {
-                            self.unicode_code_point |= c - 'A' + 10;
+                            self.utf16_code_units[1] |= c - 'A' + 10;
                         },
                         'a'...'f' => {
-                            self.unicode_code_point |= c - 'a' + 10;
+                            self.utf16_code_units[1] |= c - 'a' + 10;
                         },
                         else => return error.SyntaxError,
                     }
                     self.cursor += 1;
                     self.value_start = self.cursor;
                     self.state = .string;
-                    return self.partialStringCodepoint();
+                    const code_point = std.unicode.utf16DecodeSurrogatePair(&self.utf16_code_units) catch unreachable;
+                    return partialStringCodepoint(code_point);
                 },
 
                 .string_utf8_last_byte => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         0x80...0xBF => {
                             self.cursor += 1;
                             self.state = .string;
@@ -1266,7 +1276,8 @@ pub const Scanner = struct {
                     }
                 },
                 .string_utf8_second_to_last_byte => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         0x80...0xBF => {
                             self.cursor += 1;
                             self.state = .string_utf8_last_byte;
@@ -1276,7 +1287,8 @@ pub const Scanner = struct {
                     }
                 },
                 .string_utf8_second_to_last_byte_guard_against_overlong => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         0xA0...0xBF => {
                             self.cursor += 1;
                             self.state = .string_utf8_last_byte;
@@ -1286,7 +1298,8 @@ pub const Scanner = struct {
                     }
                 },
                 .string_utf8_second_to_last_byte_guard_against_surrogate_half => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         0x80...0x9F => {
                             self.cursor += 1;
                             self.state = .string_utf8_last_byte;
@@ -1296,7 +1309,8 @@ pub const Scanner = struct {
                     }
                 },
                 .string_utf8_third_to_last_byte => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         0x80...0xBF => {
                             self.cursor += 1;
                             self.state = .string_utf8_second_to_last_byte;
@@ -1306,7 +1320,8 @@ pub const Scanner = struct {
                     }
                 },
                 .string_utf8_third_to_last_byte_guard_against_overlong => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         0x90...0xBF => {
                             self.cursor += 1;
                             self.state = .string_utf8_second_to_last_byte;
@@ -1316,7 +1331,8 @@ pub const Scanner = struct {
                     }
                 },
                 .string_utf8_third_to_last_byte_guard_against_too_large => {
-                    switch (try self.expectByte()) {
+                    if (self.cursor >= self.input.len) return self.endOfBufferInString();
+                    switch (self.input[self.cursor]) {
                         0x80...0x8F => {
                             self.cursor += 1;
                             self.state = .string_utf8_second_to_last_byte;
@@ -1668,6 +1684,17 @@ pub const Scanner = struct {
         self.value_start = self.cursor;
         return slice;
     }
+    fn takeValueSliceMinusTrailingOffset(self: *@This(), trailing_negative_offset: usize) []const u8 {
+        // Check if the escape sequence started before the current input buffer.
+        // (The algebra here is awkward to avoid unsigned underflow,
+        //  but it's just making sure the slice on the next line isn't UB.)
+        if (self.cursor <= self.value_start + trailing_negative_offset) return "";
+        const slice = self.input[self.value_start .. self.cursor - trailing_negative_offset];
+        // When trailing_negative_offset is non-zero, setting self.value_start doesn't matter,
+        // because we always set it again while emitting the .partial_string_escaped_*.
+        self.value_start = self.cursor;
+        return slice;
+    }
 
     fn endOfBufferInNumber(self: *@This(), allow_end: bool) !Token {
         const slice = self.takeValueSlice();
@@ -1680,9 +1707,40 @@ pub const Scanner = struct {
         return Token{ .partial_number = slice };
     }
 
-    fn partialStringCodepoint(self: *@This()) Token {
-        const code_point = self.unicode_code_point;
-        self.unicode_code_point = undefined;
+    fn endOfBufferInString(self: *@This()) !Token {
+        if (self.is_end_of_input) return error.UnexpectedEndOfInput;
+        const slice = self.takeValueSliceMinusTrailingOffset(switch (self.state) {
+            // Don't include the escape sequence in the partial string.
+            .string_backslash => 1,
+            .string_backslash_u => 2,
+            .string_backslash_u_1 => 3,
+            .string_backslash_u_2 => 4,
+            .string_backslash_u_3 => 5,
+            .string_surrogate_half => 6,
+            .string_surrogate_half_backslash => 7,
+            .string_surrogate_half_backslash_u => 8,
+            .string_surrogate_half_backslash_u_1 => 9,
+            .string_surrogate_half_backslash_u_2 => 10,
+            .string_surrogate_half_backslash_u_3 => 11,
+
+            // Include everything up to the cursor otherwise.
+            .string,
+            .string_utf8_last_byte,
+            .string_utf8_second_to_last_byte,
+            .string_utf8_second_to_last_byte_guard_against_overlong,
+            .string_utf8_second_to_last_byte_guard_against_surrogate_half,
+            .string_utf8_third_to_last_byte,
+            .string_utf8_third_to_last_byte_guard_against_overlong,
+            .string_utf8_third_to_last_byte_guard_against_too_large,
+            => 0,
+
+            else => unreachable,
+        });
+        if (slice.len == 0) return error.BufferUnderrun;
+        return Token{ .partial_string = slice };
+    }
+
+    fn partialStringCodepoint(code_point: u21) Token {
         var buf: [4]u8 = undefined;
         switch (std.unicode.utf8Encode(code_point, &buf) catch unreachable) {
             1 => return Token{ .partial_string_escaped_1 = buf[0..1].* },
@@ -1697,53 +1755,6 @@ pub const Scanner = struct {
 const OBJECT_MODE = 0;
 const ARRAY_MODE = 1;
 
-const BitStack = struct {
-    bytes: std.ArrayList(u8),
-    bit_len: u32 = 0,
-
-    pub fn init(allocator: Allocator) @This() {
-        return .{
-            .bytes = std.ArrayList(u8).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: *@This()) void {
-        self.bytes.deinit();
-        self.* = undefined;
-    }
-
-    pub fn ensureTotalCapacity(self: *@This(), bit_capcity: u32) Allocator.Error!void {
-        const byte_capacity = (bit_capcity + 7) >> 3;
-        try self.bytes.ensureTotalCapacity(byte_capacity);
-    }
-
-    pub fn push(self: *@This(), b: u1) Allocator.Error!void {
-        const byte_index = self.bit_len >> 3;
-        const bit_index = @intCast(u3, self.bit_len & 7);
-
-        if (self.bytes.items.len <= byte_index) {
-            try self.bytes.append(0);
-        }
-
-        self.bytes.items[byte_index] &= ~(@as(u8, 1) << bit_index);
-        self.bytes.items[byte_index] |= @as(u8, b) << bit_index;
-
-        self.bit_len += 1;
-    }
-
-    pub fn peek(self: *const @This()) u1 {
-        const byte_index = (self.bit_len - 1) >> 3;
-        const bit_index = @intCast(u3, (self.bit_len - 1) & 7);
-        return @intCast(u1, (self.bytes.items[byte_index] >> bit_index) & 1);
-    }
-
-    pub fn pop(self: *@This()) u1 {
-        const b = self.peek();
-        self.bit_len -= 1;
-        return b;
-    }
-};
-
 fn appendSlice(list: *std.ArrayList(u8), buf: []const u8, max_value_len: usize) !void {
     const new_len = std.math.add(usize, list.items.len, buf.len) catch return error.ValueTooLong;
     if (new_len > max_value_len) return error.ValueTooLong;
@@ -1751,11 +1762,12 @@ fn appendSlice(list: *std.ArrayList(u8), buf: []const u8, max_value_len: usize) 
 }
 
 /// For the slice you get from a `Token.number` or `Token.allocated_number`,
-/// this function returns true if the number doesn't contain any fraction or exponent components.
+/// this function returns true if the number doesn't contain any fraction or exponent components, and is not `-0`.
 /// Note, the numeric value encoded by the value may still be an integer, such as `1.0`.
 /// This function is meant to give a hint about whether integer parsing or float parsing should be used on the value.
 /// This function will not give meaningful results on non-numeric input.
 pub fn isNumberFormattedLikeAnInteger(value: []const u8) bool {
+    if (std.mem.eql(u8, value, "-0")) return false;
     return std.mem.indexOfAny(u8, value, ".eE") == null;
 }
 

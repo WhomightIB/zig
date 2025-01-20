@@ -6,23 +6,10 @@
 //! The main purpose of MIR is to postpone the assignment of offsets until Isel,
 //! so that, for example, the smaller encodings of jump instructions can be used.
 
-const Mir = @This();
-const std = @import("std");
-const builtin = @import("builtin");
-const assert = std.debug.assert;
-
-const bits = @import("bits.zig");
-const encoder = @import("encoder.zig");
-
-const Air = @import("../../Air.zig");
-const CodeGen = @import("CodeGen.zig");
-const IntegerBitSet = std.bit_set.IntegerBitSet;
-const Memory = bits.Memory;
-const Register = bits.Register;
-
 instructions: std.MultiArrayList(Inst).Slice,
 /// The meaning of this data is determined by `Inst.Tag` value.
 extra: []const u32,
+table: []const Inst.Index,
 frame_locs: std.MultiArrayList(FrameLoc).Slice,
 
 pub const Inst = struct {
@@ -36,20 +23,105 @@ pub const Inst = struct {
         /// ___
         @"_",
 
-        /// Integer __
+        /// ___ 0
+        _0,
+        /// ___ 1
+        _1,
+        /// ___ 2
+        _2,
+        /// ___ 3
+        _3,
+        /// ___ 4
+        _4,
+
+        /// System Call ___
+        sys_,
+
+        /// ___ crement Shadow Stack Pointer Doubleword
+        _csspd,
+        /// ___ crement Shadow Stack Pointer Quadword
+        _csspq,
+        /// ___ FS Segment Base
+        _fsbase,
+        /// ___ GS Segment Base
+        _gsbase,
+        /// ___ Model Specific Register
+        _msr,
+        /// ___ MXCSR
+        _mxcsr,
+        /// ___ Processor ID
+        _pid,
+        /// ___ Protection Key Rights For User Pages
+        _pkru,
+        /// ___ Performance-Monitoring Counters
+        _pmc,
+        /// ___ Random Number
+        _rand,
+        /// ___ Random Seed
+        _seed,
+        /// ___ Shadow Stack Pointer Doubleword
+        _sspd,
+        /// ___ Shadow Stack Pointer Quadword
+        _sspq,
+        /// ___ Time-Stamp Counter
+        _tsc,
+        /// ___ Time-Stamp Counter And Processor ID
+        _tscp,
+        /// VEX-Encoded ___ MXCSR
+        v_mxcsr,
+
+        /// Interrupt ___
+        /// Integer ___
         i_,
+        /// Interrupt ___ Word
+        i_w,
+        /// Interrupt ___ Doubleword
+        i_d,
+        /// Interrupt ___ Quadword
+        i_q,
+        /// User-Interrupt ___
+        ui_,
+
+        /// ___ mp
+        _mp,
+        /// ___ if CX register is 0
+        _cxz,
+        /// ___ if ECX register is 0
+        _ecxz,
+        /// ___ if RCX register is 0
+        _rcxz,
+
+        /// ___ Addition
+        _a,
+        /// ___ Subtraction
+        _s,
+        /// ___ Multiply
+        _m,
+        /// ___ Division
+        _d,
 
         /// ___ Left
         _l,
         /// ___ Left Double
         _ld,
+        /// ___ Left Without Affecting Flags
+        _lx,
         /// ___ Right
+        /// ___ For Reading
+        /// ___ Register
         _r,
         /// ___ Right Double
         _rd,
+        /// ___ Right Without Affecting Flags
+        _rx,
+
+        /// ___ Forward
+        _f,
+        /// ___ Reverse
+        //_r,
 
         /// ___ Above
-        _a,
+        //_a,
         /// ___ Above Or Equal
         _ae,
         /// ___ Below
@@ -57,6 +129,7 @@ pub const Inst = struct {
         /// ___ Below Or Equal
         _be,
         /// ___ Carry
+        /// ___ Carry Flag
         _c,
         /// ___ Equal
         _e,
@@ -105,16 +178,27 @@ pub const Inst = struct {
         /// ___ Parity Odd
         _po,
         /// ___ Sign
-        _s,
+        //_s,
         /// ___ Zero
         _z,
+        /// ___ Alignment Check Flag
+        _ac,
+        /// ___ Direction Flag
+        //_d,
+        /// ___ Interrupt Flag
+        _i,
+        /// ___ Task-Switched Flag In CR0
+        _ts,
+        /// ___ User Interrupt Flag
+        _ui,
 
         /// ___ Byte
         //_b,
         /// ___ Word
+        /// ___ For Writing
         _w,
         /// ___ Doubleword
-        _d,
+        //_d,
         /// ___ QuadWord
         _q,
 
@@ -209,8 +293,72 @@ pub const Inst = struct {
 
         /// Float ___
         f_,
+        /// Float ___ +1.0
+        /// Float ___ 1
+        f_1,
+        /// Float ___ Below
+        f_b,
+        /// Float ___ Below Or Equal
+        f_be,
+        /// Float ___ Control Word
+        f_cw,
+        /// Float ___ Equal
+        f_e,
+        /// Float ___ Environment
+        f_env,
+        /// Float ___ log_2(e)
+        f_l2e,
+        /// Float ___ log_2(10)
+        f_l2t,
+        /// Float ___ log_10(2)
+        f_lg2,
+        /// Float ___ log_e(2)
+        f_ln2,
+        /// Float ___ Not Below
+        f_nb,
+        /// Float ___ Not Below Or Equal
+        f_nbe,
+        /// Float ___ Not Equal
+        f_ne,
+        /// Float ___ Not Unordered
+        f_nu,
         /// Float ___ Pop
         f_p,
+        /// Float ___ +1
+        f_p1,
+        /// Float ___ π
+        f_pi,
+        /// Float ___ Pop Pop
+        f_pp,
+        /// Float ___ stack-top pointer
+        f_stp,
+        /// Float ___ Status Word
+        f_sw,
+        /// Float ___ Unordered
+        f_u,
+        /// Float ___ +0.0
+        f_z,
+        /// Float BCD ___
+        fb_,
+        /// Float BCD ___ Pop
+        fb_p,
+        /// Float And Integer ___
+        fi_,
+        /// Float And Integer ___ Pop
+        fi_p,
+        /// Float No Wait ___
+        fn_,
+        /// Float No Wait ___ Control Word
+        fn_cw,
+        /// Float No Wait ___ Environment
+        fn_env,
+        /// Float No Wait ___ status word
+        fn_sw,
+
+        /// ___ in 32-bit and Compatibility Mode
+        _32,
+        /// ___ in 64-bit Mode
+        _64,
 
         /// Packed ___
         p_,
@@ -224,6 +372,10 @@ pub const Inst = struct {
         p_q,
         /// Packed ___ Double Quadword
         p_dq,
+        /// ___ Aligned Packed Integer Values
+        _dqa,
+        /// ___ Unaligned Packed Integer Values
+        _dqu,
 
         /// ___ Scalar Single-Precision Values
         _ss,
@@ -234,8 +386,40 @@ pub const Inst = struct {
         /// ___ Packed Double-Precision Values
         _pd,
 
+        /// ___ Internal Caches
+        //_d,
+        /// ___ TLB Entries
+        _lpg,
+        /// ___ Process-Context Identifier
+        _pcid,
+
+        /// Load ___
+        l_,
+        /// Memory ___
+        m_,
+        /// Store ___
+        s_,
+        /// Timed ___
+        t_,
+        /// User Level Monitor ___
+        um_,
+
         /// VEX-Encoded ___
         v_,
+        /// VEX-Encoded ___ Byte
+        v_b,
+        /// VEX-Encoded ___ Word
+        v_w,
+        /// VEX-Encoded ___ Doubleword
+        v_d,
+        /// VEX-Encoded ___ QuadWord
+        v_q,
+        /// VEX-Encoded ___ Aligned Packed Integer Values
+        v_dqa,
+        /// VEX-Encoded ___ Unaligned Packed Integer Values
+        v_dqu,
+        /// VEX-Encoded ___ Integer Data
+        v_i128,
         /// VEX-Encoded Packed ___
         vp_,
         /// VEX-Encoded Packed ___ Byte
@@ -256,6 +440,21 @@ pub const Inst = struct {
         v_sd,
         /// VEX-Encoded ___ Packed Double-Precision Values
         v_pd,
+        /// VEX-Encoded ___ 128-Bits Of Floating-Point Data
+        v_f128,
+
+        /// ___ 128-bit key with key locker
+        _128,
+        /// ___ 256-bit key with key locker
+        _256,
+        /// ___ with key locker using 128-bit key
+        _128kl,
+        /// ___ with key locker using 256-bit key
+        _256kl,
+        /// ___ with key locker on 8 blocks using 128-bit key
+        _wide128kl,
+        /// ___ with key locker on 8 blocks using 256-bit key
+        _wide256kl,
 
         /// Mask ___ Byte
         k_b,
@@ -275,9 +474,16 @@ pub const Inst = struct {
     };
 
     pub const Tag = enum(u8) {
+        // General-purpose
+        /// ASCII adjust al after addition
+        /// ASCII adjust ax before division
+        /// ASCII adjust ax after multiply
+        /// ASCII adjust al after subtraction
+        aa,
         /// Add with carry
         adc,
         /// Add
+        /// Add packed integers
         /// Add packed single-precision floating-point values
         /// Add scalar single-precision floating-point values
         /// Add packed double-precision floating-point values
@@ -287,10 +493,11 @@ pub const Inst = struct {
         /// Bitwise logical and of packed single-precision floating-point values
         /// Bitwise logical and of packed double-precision floating-point values
         @"and",
+        /// Adjust RPL field of segment selector
+        arpl,
         /// Bit scan forward
-        bsf,
         /// Bit scan reverse
-        bsr,
+        bs,
         /// Byte swap
         bswap,
         /// Bit test
@@ -299,6 +506,7 @@ pub const Inst = struct {
         /// Bit test and set
         bt,
         /// Call
+        /// Fast system call
         call,
         /// Convert byte to word
         cbw,
@@ -306,6 +514,25 @@ pub const Inst = struct {
         cdq,
         /// Convert doubleword to quadword
         cdqe,
+        /// Clear AC flag in EFLAGS register
+        /// Clear carry flag
+        /// Clear direction flag
+        /// Clear interrupt flag
+        /// Clear task-switched flag in CR0
+        /// Clear user interrupt flag
+        cl,
+        /// Cache line demote
+        cldemote,
+        /// Flush cache line
+        clflush,
+        /// Flush cache line optimized
+        clflushopt,
+        /// Clear busy flag in a supervisor shadow stack token
+        clrssbsy,
+        /// Cache line write back
+        clwb,
+        /// Complement carry flag
+        cmc,
         /// Conditional move
         cmov,
         /// Logical compare
@@ -316,45 +543,95 @@ pub const Inst = struct {
         /// Compare and exchange
         /// Compare and exchange bytes
         cmpxchg,
+        /// CPU identification
+        cpuid,
         /// Convert doubleword to quadword
         cqo,
         /// Convert word to doubleword
         cwd,
         /// Convert word to doubleword
         cwde,
+        /// Decimal adjust AL after addition
+        /// Decimal adjust AL after subtraction
+        da,
+        /// Decrement by 1
+        /// Decrement shadow stack pointer
+        de,
         /// Unsigned division
         /// Signed division
+        /// Divide
         /// Divide packed single-precision floating-point values
         /// Divide scalar single-precision floating-point values
         /// Divide packed double-precision floating-point values
         /// Divide scalar double-precision floating-point values
         div,
-        ///
-        int3,
-        /// Store integer with truncation
-        istt,
+        /// Terminate and indirect branch in 32-bit and compatibility mode
+        /// Terminate and indirect branch in 64-bit mode
+        endbr,
+        /// Enqueue command
+        /// Enqueue command supervisor
+        enqcmd,
+        /// Make stack frame for procedure parameters
+        /// Fast system call
+        enter,
+        /// Fast return from fast system call
+        exit,
+        /// Load fence
+        /// Memory fence
+        /// Store fence
+        fence,
+        /// Halt
+        hlt,
+        /// History reset
+        hreset,
+        /// Input from port
+        /// Input from port to string
+        /// Increment by 1
+        /// Increment shadow stack pointer
+        in,
+        /// Call to interrupt procedure
+        int,
+        /// Invalidate internal caches
+        /// Invalidate TLB entries
+        /// Invalidate process-context identifier
+        inv,
         /// Conditional jump
-        j,
         /// Jump
-        jmp,
-        /// Load floating-point value
-        ld,
+        j,
+        /// Load status flags into AH register
+        lahf,
+        /// Load access right byte
+        lar,
         /// Load effective address
         lea,
+        /// High level procedure exit
+        leave,
+        /// Load global descriptor table register
+        lgdt,
+        /// Load interrupt descriptor table register
+        lidt,
+        /// Load local descriptor table register
+        lldt,
+        /// Load machine status word
+        lmsw,
         /// Load string
         lod,
-        /// Load fence
-        lfence,
+        /// Loop according to ECX counter
+        loop,
+        /// Load segment limit
+        lsl,
+        /// Load task register
+        ltr,
         /// Count the number of leading zero bits
         lzcnt,
-        /// Memory fence
-        mfence,
         /// Move
         /// Move data from string to string
         /// Move scalar single-precision floating-point value
         /// Move scalar double-precision floating-point value
         /// Move doubleword
         /// Move quadword
+        /// Move aligned packed integer values
+        /// Move unaligned packed integer values
         mov,
         /// Move data after swapping bytes
         movbe,
@@ -372,6 +649,7 @@ pub const Inst = struct {
         /// Two's complement negation
         neg,
         /// No-op
+        /// No operation
         nop,
         /// One's complement negation
         not,
@@ -379,129 +657,245 @@ pub const Inst = struct {
         /// Bitwise logical or of packed single-precision floating-point values
         /// Bitwise logical or of packed double-precision floating-point values
         @"or",
+        /// Output to port
+        /// Output string to port
+        out,
+        /// Spin loop hint
+        /// Timed pause
+        pause,
         /// Pop
         pop,
         /// Return the count of number of bits set to 1
         popcnt,
+        /// Pop stack into EFLAGS register
+        popf,
         /// Push
         push,
+        /// Push EFLAGS register onto the stack
+        pushf,
         /// Rotate left through carry
         /// Rotate right through carry
         rc,
+        /// Read FS segment base
+        /// Read GS segment base
+        /// Read from model specific register
+        /// Read processor ID
+        /// Read protection key rights for user pages
+        /// Read performance-monitoring counters
+        /// Read random number
+        /// Read random seed
+        /// Read shadow stack pointer
+        /// Read time-stamp counter
+        /// Read time-stamp counter and processor ID
+        rd,
         /// Return
+        /// Return from fast system call
+        /// Interrupt return
+        /// User-interrupt return
         ret,
         /// Rotate left
         /// Rotate right
+        /// Rotate right logical without affecting flags
         ro,
+        /// Resume from system management mode
+        rsm,
         /// Arithmetic shift left
         /// Arithmetic shift right
+        /// Shift left arithmetic without affecting flags
         sa,
+        /// Store AH into flags
+        sahf,
         /// Integer subtraction with borrow
         sbb,
         /// Scan string
         sca,
+        /// Send user interprocessor interrupt
+        senduipi,
         /// Set byte on condition
         set,
-        /// Store fence
-        sfence,
         /// Logical shift left
         /// Double precision shift left
         /// Logical shift right
         /// Double precision shift right
+        /// Shift left logical without affecting flags
+        /// Shift right logical without affecting flags
         sh,
+        /// Store interrupt descriptor table register
+        sidt,
+        /// Store local descriptor table register
+        sldt,
+        /// Store machine status word
+        smsw,
         /// Subtract
+        /// Subtract packed integers
         /// Subtract packed single-precision floating-point values
         /// Subtract scalar single-precision floating-point values
         /// Subtract packed double-precision floating-point values
         /// Subtract scalar double-precision floating-point values
         sub,
+        /// Set carry flag
+        /// Set direction flag
+        /// Set interrupt flag
+        /// Store binary coded decimal integer and pop
+        /// Store floating-point value
+        /// Store integer
+        /// Store x87 FPU control word
+        /// Store x87 FPU environment
+        /// Store x87 FPU status word
+        /// Store MXCSR register state
+        st,
         /// Store string
         sto,
-        /// Syscall
-        syscall,
+        /// Swap GS base register
+        swapgs,
         /// Test condition
         @"test",
-        /// Count the number of trailing zero bits
-        tzcnt,
         /// Undefined instruction
-        ud2,
+        ud,
+        /// User level set up monitor address
+        umonitor,
+        /// Verify a segment for reading
+        /// Verify a segment for writing
+        ver,
+        /// Write to model specific register
+        /// Write to model specific register
+        /// Write to model specific register
+        wr,
         /// Exchange and add
         xadd,
         /// Exchange register/memory with register
-        xchg,
+        /// Exchange register contents
+        xch,
+        /// Get value of extended control register
+        xgetbv,
+        /// Table look-up translation
+        xlat,
         /// Logical exclusive-or
         /// Bitwise logical xor of packed single-precision floating-point values
         /// Bitwise logical xor of packed double-precision floating-point values
         xor,
 
-        /// Bitwise logical and not of packed single-precision floating-point values
-        /// Bitwise logical and not of packed double-precision floating-point values
-        andn,
-        /// Convert doubleword integer to scalar single-precision floating-point value
-        cvtsi2ss,
-        /// Maximum of packed single-precision floating-point values
-        /// Maximum of scalar single-precision floating-point values
-        /// Maximum of packed double-precision floating-point values
-        /// Maximum of scalar double-precision floating-point values
-        max,
-        /// Minimum of packed single-precision floating-point values
-        /// Minimum of scalar single-precision floating-point values
-        /// Minimum of packed double-precision floating-point values
-        /// Minimum of scalar double-precision floating-point values
-        min,
-        /// Move aligned packed single-precision floating-point values
-        /// Move aligned packed double-precision floating-point values
-        mova,
-        /// Move packed single-precision floating-point values high to low
-        movhl,
-        /// Move unaligned packed single-precision floating-point values
-        /// Move unaligned packed double-precision floating-point values
-        movu,
-        /// Extract byte
-        /// Extract word
-        /// Extract doubleword
-        /// Extract quadword
-        extr,
-        /// Insert byte
-        /// Insert word
-        /// Insert doubleword
-        /// Insert quadword
-        insr,
+        // X87
+        /// Compute 2^x-1
+        @"2xm1",
+        /// Absolute value
+        abs,
+        /// Change sign
+        chs,
+        /// Clear exceptions
+        clex,
+        /// Compare floating-point values
+        com,
+        /// Compare floating-point values and set EFLAGS
+        /// Compare scalar ordered single-precision floating-point values
+        /// Compare scalar ordered double-precision floating-point values
+        comi,
+        /// Cosine
+        cos,
+        /// Decrement stack-top pointer
+        decstp,
+        /// Reverse divide
+        divr,
+        /// Free floating-point register
+        free,
+        /// Increment stack-top pointer
+        incstp,
+        /// Initialize floating-point unit
+        init,
+        /// Load binary coded decimal integer
+        /// Load floating-point value
+        /// Load integer
+        /// Load constant
+        /// Load x87 FPU control word
+        /// Load x87 FPU environment
+        /// Load MXCSR register state
+        ld,
+        /// Partial arctangent
+        patan,
+        /// Partial remainder
+        prem,
+        /// Partial tangent
+        ptan,
+        /// Round to integer
+        rndint,
+        /// Restore x87 FPU state
+        rstor,
+        /// Store x87 FPU state
+        save,
+        /// Scale
+        scale,
+        /// Sine
+        sin,
+        /// Sine and cosine
+        sincos,
+        /// Square root
         /// Square root of packed single-precision floating-point values
         /// Square root of scalar single-precision floating-point value
         /// Square root of packed double-precision floating-point values
         /// Square root of scalar double-precision floating-point value
         sqrt,
+        /// Store integer with truncation
+        stt,
+        /// Reverse subtract
+        subr,
+        /// Test
+        tst,
+        /// Unordered compare floating-point values
+        ucom,
+        /// Unordered compare floating-point values and set EFLAGS
         /// Unordered compare scalar single-precision floating-point values
         /// Unordered compare scalar double-precision floating-point values
         ucomi,
-        /// Unpack and interleave high packed single-precision floating-point values
-        /// Unpack and interleave high packed double-precision floating-point values
-        unpckh,
-        /// Unpack and interleave low packed single-precision floating-point values
-        /// Unpack and interleave low packed double-precision floating-point values
-        unpckl,
+        /// Wait
+        /// User level monitor wait
+        wait,
+        /// Examine floating-point
+        xam,
+        /// Extract exponent and significand
+        xtract,
+        /// Compute y * log2x
+        /// Compute y * log2(x + 1)
+        yl2x,
 
-        /// Convert scalar double-precision floating-point value to scalar single-precision floating-point value
-        cvtsd2ss,
-        /// Convert doubleword integer to scalar double-precision floating-point value
-        cvtsi2sd,
-        /// Convert scalar single-precision floating-point value to scalar double-precision floating-point value
-        cvtss2sd,
-        /// Shuffle packed high words
-        shufh,
-        /// Shuffle packed low words
-        shufl,
-        /// Shift packed data right logical
-        /// Shift packed data right logical
+        // MMX
+        /// Pack with signed saturation
+        ackssw,
+        /// Pack with signed saturation
+        ackssd,
+        /// Pack with unsigned saturation
+        ackusw,
+        /// Add packed signed integers with signed saturation
+        adds,
+        /// Add packed unsigned integers with unsigned saturation
+        addus,
+        /// Logical and not
+        /// Bitwise logical and not of packed single-precision floating-point values
+        /// Bitwise logical and not of packed double-precision floating-point values
+        andn,
+        /// Compare packed data for equal
+        cmpeq,
+        /// Compare packed data for greater than
+        cmpgt,
+        /// Empty MMX technology state
+        emms,
+        /// Multiply packed signed integers and store low result
+        mull,
+        /// Multiply packed signed integers and store high result
+        mulh,
+        /// Shift packed data left logical
+        sll,
+        /// Shift packed data right arithmetic
+        sra,
         /// Shift packed data right logical
         srl,
+        /// Subtract packed signed integers with signed saturation
+        subs,
+        /// Subtract packed unsigned integers with unsigned saturation
+        subus,
         /// Unpack high data
         unpckhbw,
         /// Unpack high data
         unpckhdq,
-        /// Unpack high data
-        unpckhqdq,
         /// Unpack high data
         unpckhwd,
         /// Unpack low data
@@ -509,10 +903,137 @@ pub const Inst = struct {
         /// Unpack low data
         unpckldq,
         /// Unpack low data
-        unpcklqdq,
-        /// Unpack low data
         unpcklwd,
 
+        // SSE
+        /// Convert packed doubleword integers to packed single-precision floating-point values
+        /// Convert packed doubleword integers to packed double-precision floating-point values
+        cvtpi2,
+        /// Convert packed single-precision floating-point values to packed doubleword integers
+        cvtps2pi,
+        /// Convert doubleword integer to scalar single-precision floating-point value
+        /// Convert doubleword integer to scalar double-precision floating-point value
+        cvtsi2,
+        /// Convert scalar single-precision floating-point value to doubleword integer
+        cvtss2si,
+        /// Convert with truncation packed single-precision floating-point values to packed doubleword integers
+        cvttps2pi,
+        /// Convert with truncation scalar single-precision floating-point value to doubleword integer
+        cvttss2si,
+        /// Extract byte
+        /// Extract word
+        /// Extract doubleword
+        /// Extract quadword
+        extr,
+        /// Restore x87 FPU, MMX, XMM, and MXCSR state
+        fxrstor,
+        /// Save x87 FPU, MMX technology, and MXCSR state
+        fxsave,
+        /// Insert byte
+        /// Insert word
+        /// Insert doubleword
+        /// Insert quadword
+        insr,
+        /// Maximum of packed single-precision floating-point values
+        /// Maximum of scalar single-precision floating-point values
+        /// Maximum of packed double-precision floating-point values
+        /// Maximum of scalar double-precision floating-point values
+        max,
+        /// Maximum of packed signed integers
+        maxs,
+        /// Maximum of packed unsigned integers
+        maxu,
+        /// Minimum of packed single-precision floating-point values
+        /// Minimum of scalar single-precision floating-point values
+        /// Minimum of packed double-precision floating-point values
+        /// Minimum of scalar double-precision floating-point values
+        min,
+        /// Minimum of packed signed integers
+        mins,
+        /// Minimum of packed unsigned integers
+        minu,
+        /// Move aligned packed single-precision floating-point values
+        /// Move aligned packed double-precision floating-point values
+        mova,
+        /// Move high packed single-precision floating-point values
+        /// Move high packed double-precision floating-point values
+        movh,
+        /// Move packed single-precision floating-point values high to low
+        movhl,
+        /// Move low packed single-precision floating-point values
+        /// Move low packed double-precision floating-point values
+        movl,
+        /// Move packed single-precision floating-point values low to high
+        movlh,
+        /// Move byte mask
+        /// Extract packed single precision floating-point sign mask
+        /// Extract packed double precision floating-point sign mask
+        movmsk,
+        /// Move unaligned packed single-precision floating-point values
+        /// Move unaligned packed double-precision floating-point values
+        movu,
+        /// Packed interleave shuffle of quadruplets of single-precision floating-point values
+        /// Packed interleave shuffle of pairs of double-precision floating-point values
+        /// Shuffle packed doublewords
+        /// Shuffle packed words
+        shuf,
+        /// Unpack and interleave high packed single-precision floating-point values
+        /// Unpack and interleave high packed double-precision floating-point values
+        unpckh,
+        /// Unpack and interleave low packed single-precision floating-point values
+        /// Unpack and interleave low packed double-precision floating-point values
+        unpckl,
+
+        // SSE2
+        /// Convert packed doubleword integers to packed single-precision floating-point values
+        /// Convert packed doubleword integers to packed double-precision floating-point values
+        cvtdq2,
+        /// Convert packed double-precision floating-point values to packed doubleword integers
+        cvtpd2dq,
+        /// Convert packed double-precision floating-point values to packed doubleword integers
+        cvtpd2pi,
+        /// Convert packed double-precision floating-point values to packed single-precision floating-point values
+        cvtpd2,
+        /// Convert packed single-precision floating-point values to packed doubleword integers
+        cvtps2dq,
+        /// Convert packed single-precision floating-point values to packed double-precision floating-point values
+        cvtps2,
+        /// Convert scalar double-precision floating-point value to doubleword integer
+        cvtsd2si,
+        /// Convert scalar double-precision floating-point value to scalar single-precision floating-point value
+        cvtsd2,
+        /// Convert scalar single-precision floating-point value to scalar double-precision floating-point value
+        cvtss2,
+        /// Convert with truncation packed double-precision floating-point values to packed doubleword integers
+        cvttpd2dq,
+        /// Convert with truncation packed double-precision floating-point values to packed doubleword integers
+        cvttpd2pi,
+        /// Convert with truncation packed single-precision floating-point values to packed doubleword integers
+        cvttps2dq,
+        /// Convert with truncation scalar double-precision floating-point value to doubleword integer
+        cvttsd2si,
+        /// Galois field affine transformation inverse
+        gf2p8affineinvq,
+        /// Galois field affine transformation
+        gf2p8affineq,
+        /// Galois field multiply bytes
+        gf2p8mul,
+        /// Shuffle packed high words
+        shufh,
+        /// Shuffle packed low words
+        shufl,
+        /// Unpack high data
+        unpckhqdq,
+        /// Unpack low data
+        unpcklqdq,
+
+        // SSE3
+        /// Packed single-precision floating-point add/subtract
+        /// Packed double-precision floating-point add/subtract
+        addsub,
+        /// Packed single-precision floating-point horizontal add
+        /// Packed double-precision floating-point horizontal add
+        hadd,
         /// Replicate double floating-point values
         movddup,
         /// Replicate single floating-point values
@@ -520,17 +1041,112 @@ pub const Inst = struct {
         /// Replicate single floating-point values
         movsldup,
 
+        // SSSE3
+        /// Packed align right
+        alignr,
+
+        // SSE4.1
+        /// Pack with unsigned saturation
+        ackusd,
+        /// Blend packed single-precision floating-point values
+        /// Blend scalar single-precision floating-point values
+        /// Blend packed double-precision floating-point values
+        /// Blend scalar double-precision floating-point values
+        blend,
+        /// Variable blend packed single-precision floating-point values
+        /// Variable blend scalar single-precision floating-point values
+        /// Variable blend packed double-precision floating-point values
+        /// Variable blend scalar double-precision floating-point values
+        blendv,
+        /// Dot product of packed single-precision floating-point values
+        /// Dot product of packed double-precision floating-point values
+        dp,
+        /// Extract packed floating-point values
+        /// Extract packed integer values
+        extract,
+        /// Insert scalar single-precision floating-point value
+        /// Insert packed floating-point values
+        insert,
+        /// Packed move with sign extend
+        movsxb,
+        movsxd,
+        movsxw,
+        /// Packed move with zero extend
+        movzxb,
+        movzxd,
+        movzxw,
         /// Round packed single-precision floating-point values
         /// Round scalar single-precision floating-point value
         /// Round packed double-precision floating-point values
         /// Round scalar double-precision floating-point value
         round,
 
+        // SSE4.2
+        /// Accumulate CRC32 value
+        crc32,
+
+        // PCLMUL
+        /// Carry-less multiplication quadword
+        clmulq,
+
+        // AES
+        /// Perform one round of an AES decryption flow
+        /// Perform ten rounds of AES decryption flow with key locker using 128-bit key
+        /// Perform ten rounds of AES decryption flow with key locker using 256-bit key
+        /// Perform ten rounds of AES decryption flow with key locker on 8 blocks using 128-bit key
+        /// Perform ten rounds of AES decryption flow with key locker on 8 blocks using 256-bit key
+        aesdec,
+        /// Perform last round of an AES decryption flow
+        aesdeclast,
+        /// Perform one round of an AES encryption flow
+        /// Perform ten rounds of AES encryption flow with key locker using 128-bit key
+        /// Perform ten rounds of AES encryption flow with key locker using 256-bit key
+        /// Perform ten rounds of AES encryption flow with key locker on 8 blocks using 128-bit key
+        /// Perform ten rounds of AES encryption flow with key locker on 8 blocks using 256-bit key
+        aesenc,
+        /// Perform last round of an AES encryption flow
+        aesenclast,
+        /// Perform the AES InvMixColumn transformation
+        aesimc,
+        /// AES round key generation assist
+        aeskeygenassist,
+
+        // SHA
+        /// Perform four rounds of SHA1 operation
+        sha1rnds,
+        /// Calculate SHA1 state variable E after four rounds
+        sha1nexte,
+        /// Perform an intermediate calculation for the next four SHA1 message dwords
+        /// Perform a final calculation for the next four SHA1 message dwords
+        sha1msg,
+        /// Perform an intermediate calculation for the next four SHA256 message dwords
+        /// Perform a final calculation for the next four SHA256 message dwords
+        sha256msg,
+        /// Perform two rounds of SHA256 operation
+        sha256rnds,
+
+        // AVX
+        /// Bit field extract
+        bextr,
+        /// Extract lowest set isolated bit
+        /// Get mask up to lowest set bit
+        /// Reset lowest set bit
+        bls,
+        /// Load with broadcast floating-point data
+        /// Load integer and broadcast
+        broadcast,
+        /// Zero high bits starting with specified bit position
+        bzhi,
+        /// Count the number of trailing zero bits
+        tzcnt,
+
+        // F16C
         /// Convert 16-bit floating-point values to single-precision floating-point values
-        cvtph2ps,
+        cvtph2,
         /// Convert single-precision floating-point values to 16-bit floating-point values
         cvtps2ph,
 
+        // FMA
         /// Fused multiply-add of packed single-precision floating-point values
         /// Fused multiply-add of scalar single-precision floating-point values
         /// Fused multiply-add of packed double-precision floating-point values
@@ -546,6 +1162,19 @@ pub const Inst = struct {
         /// Fused multiply-add of packed double-precision floating-point values
         /// Fused multiply-add of scalar double-precision floating-point values
         fmadd231,
+
+        // ADX
+        /// Unsigned integer addition of two operands with carry flag
+        adcx,
+        /// Unsigned integer addition of two operands with overflow flag
+        adox,
+
+        // AESKLE
+        /// Encode 128-bit key with key locker
+        /// Encode 256-bit key with key locker
+        encodekey,
+        /// Load internal wrapping key with key locker
+        loadiwkey,
 
         /// A pseudo instruction that requires special lowering.
         /// This should be the only tag in this enum that doesn't
@@ -567,6 +1196,9 @@ pub const Inst = struct {
         /// Register, register, register operands.
         /// Uses `rrr` payload.
         rrr,
+        /// Register, register, register, register operands.
+        /// Uses `rrrr` payload.
+        rrrr,
         /// Register, register, register, immediate (byte) operands.
         /// Uses `rrri` payload.
         rrri,
@@ -583,83 +1215,65 @@ pub const Inst = struct {
         /// Uses `ri` payload.
         ri_u,
         /// Register, 64-bit unsigned immediate operands.
-        /// Uses `rx` payload with payload type `Imm64`.
-        ri64,
+        /// Uses `ri` payload with `i` index of extra data of type `Imm64`.
+        ri_64,
         /// Immediate (sign-extended) operand.
-        /// Uses `imm` payload.
+        /// Uses `i` payload.
         i_s,
         /// Immediate (unsigned) operand.
-        /// Uses `imm` payload.
+        /// Uses `i` payload.
         i_u,
+        /// Immediate (word), immediate (byte) operands.
+        /// Uses `ii` payload.
+        ii,
+        /// Immediate (byte), register operands.
+        /// Uses `ri` payload.
+        ir,
         /// Relative displacement operand.
-        /// Uses `imm` payload.
+        /// Uses `reloc` payload.
         rel,
-        /// Register, memory (SIB) operands.
-        /// Uses `rx` payload.
-        rm_sib,
-        /// Register, memory (RIP) operands.
-        /// Uses `rx` payload.
-        rm_rip,
-        /// Register, memory (SIB), immediate (byte) operands.
-        /// Uses `rix` payload with extra data of type `MemorySib`.
-        rmi_sib,
-        /// Register, register, memory (RIP).
-        /// Uses `rrix` payload with extra data of type `MemoryRip`.
-        rrm_rip,
-        /// Register, register, memory (SIB).
-        /// Uses `rrix` payload with extra data of type `MemorySib`.
-        rrm_sib,
-        /// Register, register, memory (RIP), immediate (byte) operands.
-        /// Uses `rrix` payload with extra data of type `MemoryRip`.
-        rrmi_rip,
-        /// Register, register, memory (SIB), immediate (byte) operands.
-        /// Uses `rrix` payload with extra data of type `MemorySib`.
-        rrmi_sib,
-        /// Register, memory (RIP), immediate (byte) operands.
-        /// Uses `rix` payload with extra data of type `MemoryRip`.
-        rmi_rip,
-        /// Single memory (SIB) operand.
-        /// Uses `x` with extra data of type `MemorySib`.
-        m_sib,
-        /// Single memory (RIP) operand.
-        /// Uses `x` with extra data of type `MemoryRip`.
-        m_rip,
-        /// Memory (SIB), immediate (unsigned) operands.
-        /// Uses `x` payload with extra data of type `Imm32` followed by `MemorySib`.
-        mi_sib_u,
-        /// Memory (RIP), immediate (unsigned) operands.
-        /// Uses `x` payload with extra data of type `Imm32` followed by `MemoryRip`.
-        mi_rip_u,
-        /// Memory (SIB), immediate (sign-extend) operands.
-        /// Uses `x` payload with extra data of type `Imm32` followed by `MemorySib`.
-        mi_sib_s,
-        /// Memory (RIP), immediate (sign-extend) operands.
-        /// Uses `x` payload with extra data of type `Imm32` followed by `MemoryRip`.
-        mi_rip_s,
-        /// Memory (SIB), register operands.
-        /// Uses `rx` payload with extra data of type `MemorySib`.
-        mr_sib,
-        /// Memory (RIP), register operands.
-        /// Uses `rx` payload with extra data of type `MemoryRip`.
-        mr_rip,
-        /// Memory (SIB), register, register operands.
-        /// Uses `rrx` payload with extra data of type `MemorySib`.
-        mrr_sib,
-        /// Memory (RIP), register, register operands.
-        /// Uses `rrx` payload with extra data of type `MemoryRip`.
-        mrr_rip,
-        /// Memory (SIB), register, immediate (byte) operands.
-        /// Uses `rix` payload with extra data of type `MemorySib`.
-        mri_sib,
-        /// Memory (RIP), register, immediate (byte) operands.
-        /// Uses `rix` payload with extra data of type `MemoryRip`.
-        mri_rip,
-        /// Rax, Memory moffs.
-        /// Uses `x` with extra data of type `MemoryMoffs`.
-        rax_moffs,
-        /// Memory moffs, rax.
-        /// Uses `x` with extra data of type `MemoryMoffs`.
-        moffs_rax,
+        /// Register, memory operands.
+        /// Uses `rx` payload with extra data of type `Memory`.
+        rm,
+        /// Register, memory, register operands.
+        /// Uses `rrx` payload with extra data of type `Memory`.
+        rmr,
+        /// Register, memory, immediate (word) operands.
+        /// Uses `rix` payload with extra data of type `Memory`.
+        rmi,
+        /// Register, memory, immediate (signed) operands.
+        /// Uses `rx` payload with extra data of type `Imm32` followed by `Memory`.
+        rmi_s,
+        /// Register, memory, immediate (unsigned) operands.
+        /// Uses `rx` payload with extra data of type `Imm32` followed by `Memory`.
+        rmi_u,
+        /// Register, register, memory.
+        /// Uses `rrix` payload with extra data of type `Memory`.
+        rrm,
+        /// Register, register, memory, register.
+        /// Uses `rrrx` payload with extra data of type `Memory`.
+        rrmr,
+        /// Register, register, memory, immediate (byte) operands.
+        /// Uses `rrix` payload with extra data of type `Memory`.
+        rrmi,
+        /// Single memory operand.
+        /// Uses `x` payload with extra data of type `Memory`.
+        m,
+        /// Memory, immediate (sign-extend) operands.
+        /// Uses `x` payload with extra data of type `Imm32` followed by `Memory`.
+        mi_s,
+        /// Memory, immediate (unsigned) operands.
+        /// Uses `x` payload with extra data of type `Imm32` followed by `Memory`.
+        mi_u,
+        /// Memory, register operands.
+        /// Uses `rx` payload with extra data of type `Memory`.
+        mr,
+        /// Memory, register, register operands.
+        /// Uses `rrx` payload with extra data of type `Memory`.
+        mrr,
+        /// Memory, register, immediate (word) operands.
+        /// Uses `rix` payload with extra data of type `Memory`.
+        mri,
         /// References another Mir instruction directly.
         /// Uses `inst` payload.
         inst,
@@ -667,16 +1281,16 @@ pub const Inst = struct {
         /// Uses `reloc` payload.
         extern_fn_reloc,
         /// Linker relocation - GOT indirection.
-        /// Uses `rx` payload with extra data of type `Reloc`.
+        /// Uses `rx` payload with extra data of type `bits.SymbolOffset`.
         got_reloc,
         /// Linker relocation - direct reference.
-        /// Uses `rx` payload with extra data of type `Reloc`.
+        /// Uses `rx` payload with extra data of type `bits.SymbolOffset`.
         direct_reloc,
         /// Linker relocation - imports table indirection (binding).
-        /// Uses `rx` payload with extra data of type `Reloc`.
+        /// Uses `rx` payload with extra data of type `bits.SymbolOffset`.
         import_reloc,
         /// Linker relocation - threadlocal variable via GOT indirection.
-        /// Uses `rx` payload with extra data of type `Reloc`.
+        /// Uses `rx` payload with extra data of type `bits.SymbolOffset`.
         tlv_reloc,
 
         // Pseudo instructions:
@@ -690,40 +1304,42 @@ pub const Inst = struct {
         pseudo_cmov_nz_or_p_rr,
         /// Conditional move if zero flag not set or parity flag set
         /// Uses `rx` payload.
-        pseudo_cmov_nz_or_p_rm_sib,
-        /// Conditional move if zero flag not set or parity flag set
-        /// Uses `rx` payload.
-        pseudo_cmov_nz_or_p_rm_rip,
+        pseudo_cmov_nz_or_p_rm,
         /// Set byte if zero flag set and parity flag not set
         /// Requires a scratch register!
-        /// Uses `r_scratch` payload.
+        /// Uses `rr` payload.
         pseudo_set_z_and_np_r,
         /// Set byte if zero flag set and parity flag not set
         /// Requires a scratch register!
-        /// Uses `x_scratch` payload.
-        pseudo_set_z_and_np_m_sib,
-        /// Set byte if zero flag set and parity flag not set
-        /// Requires a scratch register!
-        /// Uses `x_scratch` payload.
-        pseudo_set_z_and_np_m_rip,
+        /// Uses `rx` payload.
+        pseudo_set_z_and_np_m,
         /// Set byte if zero flag not set or parity flag set
         /// Requires a scratch register!
-        /// Uses `r_scratch` payload.
+        /// Uses `rr` payload.
         pseudo_set_nz_or_p_r,
         /// Set byte if zero flag not set or parity flag set
         /// Requires a scratch register!
-        /// Uses `x_scratch` payload.
-        pseudo_set_nz_or_p_m_sib,
-        /// Set byte if zero flag not set or parity flag set
-        /// Requires a scratch register!
-        /// Uses `x_scratch` payload.
-        pseudo_set_nz_or_p_m_rip,
+        /// Uses `rx` payload.
+        pseudo_set_nz_or_p_m,
         /// Jump if zero flag set and parity flag not set
         /// Uses `inst` payload.
         pseudo_j_z_and_np_inst,
         /// Jump if zero flag not set or parity flag set
         /// Uses `inst` payload.
         pseudo_j_nz_or_p_inst,
+
+        /// Probe alignment
+        /// Uses `ri` payload.
+        pseudo_probe_align_ri_s,
+        /// Probe adjust unrolled
+        /// Uses `ri` payload.
+        pseudo_probe_adjust_unrolled_ri_s,
+        /// Probe adjust setup
+        /// Uses `rri` payload.
+        pseudo_probe_adjust_setup_rri_s,
+        /// Probe adjust loop
+        /// Uses `rr` payload.
+        pseudo_probe_adjust_loop_rr,
 
         /// Push registers
         /// Uses `reg_list` payload.
@@ -732,13 +1348,94 @@ pub const Inst = struct {
         /// Uses `reg_list` payload.
         pseudo_pop_reg_list,
 
+        /// Define cfa rule as offset from register.
+        /// Uses `ri` payload.
+        pseudo_cfi_def_cfa_ri_s,
+        /// Modify cfa rule register.
+        /// Uses `r` payload.
+        pseudo_cfi_def_cfa_register_r,
+        /// Modify cfa rule offset.
+        /// Uses `i` payload.
+        pseudo_cfi_def_cfa_offset_i_s,
+        /// Offset cfa rule offset.
+        /// Uses `i` payload.
+        pseudo_cfi_adjust_cfa_offset_i_s,
+        /// Define register rule as stored at offset from cfa.
+        /// Uses `ri` payload.
+        pseudo_cfi_offset_ri_s,
+        /// Define register rule as offset from cfa.
+        /// Uses `ri` payload.
+        pseudo_cfi_val_offset_ri_s,
+        /// Define register rule as stored at offset from cfa rule register.
+        /// Uses `ri` payload.
+        pseudo_cfi_rel_offset_ri_s,
+        /// Define register rule as register.
+        /// Uses `rr` payload.
+        pseudo_cfi_register_rr,
+        /// Define register rule from initial.
+        /// Uses `r` payload.
+        pseudo_cfi_restore_r,
+        /// Define register rule as undefined.
+        /// Uses `r` payload.
+        pseudo_cfi_undefined_r,
+        /// Define register rule as itself.
+        /// Uses `r` payload.
+        pseudo_cfi_same_value_r,
+        /// Push cfi state.
+        pseudo_cfi_remember_state_none,
+        /// Pop cfi state.
+        pseudo_cfi_restore_state_none,
+        /// Raw cfi bytes.
+        /// Uses `bytes` payload.
+        pseudo_cfi_escape_bytes,
+
         /// End of prologue
         pseudo_dbg_prologue_end_none,
-        /// Update debug line
+        /// Update debug line with is_stmt register set
+        /// Uses `line_column` payload.
+        pseudo_dbg_line_stmt_line_column,
+        /// Update debug line with is_stmt register clear
         /// Uses `line_column` payload.
         pseudo_dbg_line_line_column,
         /// Start of epilogue
         pseudo_dbg_epilogue_begin_none,
+        /// Start of lexical block
+        pseudo_dbg_enter_block_none,
+        /// End of lexical block
+        pseudo_dbg_leave_block_none,
+        /// Start of inline function
+        pseudo_dbg_enter_inline_func,
+        /// End of inline function
+        pseudo_dbg_leave_inline_func,
+        /// Local argument or variable.
+        /// Uses `a` payload.
+        pseudo_dbg_local_a,
+        /// Local argument or variable.
+        /// Uses `ai` payload.
+        pseudo_dbg_local_ai_s,
+        /// Local argument or variable.
+        /// Uses `ai` payload.
+        pseudo_dbg_local_ai_u,
+        /// Local argument or variable.
+        /// Uses `ai` payload with extra data of type `Imm64`.
+        pseudo_dbg_local_ai_64,
+        /// Local argument or variable.
+        /// Uses `as` payload.
+        pseudo_dbg_local_as,
+        /// Local argument or variable.
+        /// Uses `ax` payload with extra data of type `bits.SymbolOffset`.
+        pseudo_dbg_local_aso,
+        /// Local argument or variable.
+        /// Uses `rx` payload with extra data of type `AirOffset`.
+        pseudo_dbg_local_aro,
+        /// Local argument or variable.
+        /// Uses `ax` payload with extra data of type `bits.FrameAddr`.
+        pseudo_dbg_local_af,
+        /// Local argument or variable.
+        /// Uses `ax` payload with extra data of type `Memory`.
+        pseudo_dbg_local_am,
+        /// Remaining arguments are varargs.
+        pseudo_dbg_var_args_none,
 
         /// Tombstone
         /// Emitter should skip this instruction.
@@ -759,6 +1456,11 @@ pub const Inst = struct {
             fixes: Fixes = ._,
             i: u32,
         },
+        ii: struct {
+            fixes: Fixes = ._,
+            i1: u16,
+            i2: u8,
+        },
         r: struct {
             fixes: Fixes = ._,
             r1: Register,
@@ -773,6 +1475,13 @@ pub const Inst = struct {
             r1: Register,
             r2: Register,
             r3: Register,
+        },
+        rrrr: struct {
+            fixes: Fixes = ._,
+            r1: Register,
+            r2: Register,
+            r3: Register,
+            r4: Register,
         },
         rrri: struct {
             fixes: Fixes = ._,
@@ -806,11 +1515,19 @@ pub const Inst = struct {
             r2: Register,
             payload: u32,
         },
+        /// Register, register, register, followed by Custom payload found in extra.
+        rrrx: struct {
+            fixes: Fixes = ._,
+            r1: Register,
+            r2: Register,
+            r3: Register,
+            payload: u32,
+        },
         /// Register, byte immediate, followed by Custom payload found in extra.
         rix: struct {
             fixes: Fixes = ._,
             r1: Register,
-            i: u8,
+            i: u16,
             payload: u32,
         },
         /// Register, register, byte immediate, followed by Custom payload found in extra.
@@ -821,63 +1538,71 @@ pub const Inst = struct {
             i: u8,
             payload: u32,
         },
-        /// Register, scratch register
-        r_scratch: struct {
-            fixes: Fixes = ._,
-            r1: Register,
-            scratch_reg: Register,
-        },
-        /// Scratch register, followed by Custom payload found in extra.
-        x_scratch: struct {
-            fixes: Fixes = ._,
-            scratch_reg: Register,
-            payload: u32,
-        },
         /// Custom payload found in extra.
         x: struct {
             fixes: Fixes = ._,
             payload: u32,
         },
+        bytes: struct {
+            payload: u32,
+            len: u32,
+
+            pub fn get(bytes: @This(), mir: Mir) []const u8 {
+                return std.mem.sliceAsBytes(mir.extra[bytes.payload..])[0..bytes.len];
+            }
+        },
+        a: struct {
+            air_inst: Air.Inst.Index,
+        },
+        ai: struct {
+            air_inst: Air.Inst.Index,
+            i: u32,
+        },
+        as: struct {
+            air_inst: Air.Inst.Index,
+            sym_index: u32,
+        },
+        ax: struct {
+            air_inst: Air.Inst.Index,
+            payload: u32,
+        },
         /// Relocation for the linker where:
-        /// * `atom_index` is the index of the source
         /// * `sym_index` is the index of the target
-        reloc: Reloc,
+        /// * `off` is the offset from the target
+        reloc: bits.SymbolOffset,
         /// Debug line and column position
         line_column: struct {
             line: u32,
             column: u32,
         },
+        func: InternPool.Index,
         /// Register list
         reg_list: RegisterList,
     };
 
     // Make sure we don't accidentally make instructions bigger than expected.
-    // Note that in Debug builds, Zig is allowed to insert a secret field for safety checks.
+    // Note that in safety builds, Zig is allowed to insert a secret field for safety checks.
     comptime {
-        if (builtin.mode != .Debug and builtin.mode != .ReleaseSafe) {
+        if (!std.debug.runtime_safety) {
             assert(@sizeOf(Data) == 8);
         }
     }
 };
 
-/// A linker symbol not yet allocated in VM.
-pub const Reloc = struct {
-    /// Index of the containing atom.
-    atom_index: u32,
-    /// Index into the linker's symbol table.
-    sym_index: u32,
-};
+pub const AirOffset = struct { air_inst: Air.Inst.Index, off: i32 };
 
 /// Used in conjunction with payload to transfer a list of used registers in a compact manner.
 pub const RegisterList = struct {
-    bitset: BitSet = BitSet.initEmpty(),
+    bitset: BitSet,
 
     const BitSet = IntegerBitSet(32);
     const Self = @This();
 
+    pub const empty: RegisterList = .{ .bitset = .initEmpty() };
+
     fn getIndexForReg(registers: []const Register, reg: Register) BitSet.MaskInt {
         for (registers, 0..) |cpreg, i| {
-            if (reg.id() == cpreg.id()) return @intCast(u32, i);
+            if (reg.id() == cpreg.id()) return @intCast(i);
         }
         unreachable; // register not in input register list!
     }
@@ -896,8 +1621,16 @@ pub const RegisterList = struct {
         return self.bitset.iterator(options);
     }
 
-    pub fn count(self: Self) u32 {
-        return @intCast(u32, self.bitset.count());
+    pub fn count(self: Self) i32 {
+        return @intCast(self.bitset.count());
+    }
+
+    pub fn size(self: Self, target: *const std.Target) i32 {
+        return @intCast(self.bitset.count() * @as(u4, switch (target.cpu.arch) {
+            else => unreachable,
+            .x86 => 4,
+            .x86_64 => 8,
+        }));
     }
 };
 
@@ -911,119 +1644,113 @@ pub const Imm64 = struct {
 
     pub fn encode(v: u64) Imm64 {
         return .{
-            .msb = @truncate(u32, v >> 32),
-            .lsb = @truncate(u32, v),
+            .msb = @truncate(v >> 32),
+            .lsb = @truncate(v),
         };
     }
 
     pub fn decode(imm: Imm64) u64 {
         var res: u64 = 0;
-        res |= (@intCast(u64, imm.msb) << 32);
-        res |= @intCast(u64, imm.lsb);
+        res |= @as(u64, @intCast(imm.msb)) << 32;
+        res |= @as(u64, @intCast(imm.lsb));
         return res;
     }
 };
 
-// TODO this can be further compacted using packed struct
-pub const MemorySib = struct {
-    /// Size of the pointer.
-    ptr_size: u32,
-    /// Base register tag of type Memory.Base.Tag
-    base_tag: u32,
-    /// Base register of type Register or FrameIndex
+pub const Memory = struct {
+    info: Info,
     base: u32,
-    /// Scale starting at bit 0 and index register starting at bit 4.
-    scale_index: u32,
-    /// Displacement value.
-    disp: i32,
+    off: u32,
+    extra: u32,
 
-    pub fn encode(mem: Memory) MemorySib {
-        const sib = mem.sib;
-        assert(sib.scale_index.scale == 0 or std.math.isPowerOfTwo(sib.scale_index.scale));
+    pub const Info = packed struct(u32) {
+        base: @typeInfo(bits.Memory.Base).@"union".tag_type.?,
+        mod: @typeInfo(bits.Memory.Mod).@"union".tag_type.?,
+        size: bits.Memory.Size,
+        index: Register,
+        scale: bits.Memory.Scale,
+        _: u14 = undefined,
+    };
+
+    pub fn encode(mem: bits.Memory) Memory {
+        assert(mem.base != .reloc or mem.mod != .off);
         return .{
-            .ptr_size = @enumToInt(sib.ptr_size),
-            .base_tag = @enumToInt(@as(Memory.Base.Tag, sib.base)),
-            .base = switch (sib.base) {
-                .none => undefined,
-                .reg => |r| @enumToInt(r),
-                .frame => |fi| @enumToInt(fi),
+            .info = .{
+                .base = mem.base,
+                .mod = mem.mod,
+                .size = switch (mem.mod) {
+                    .rm => |rm| rm.size,
+                    .off => undefined,
+                },
+                .index = switch (mem.mod) {
+                    .rm => |rm| rm.index,
+                    .off => undefined,
+                },
+                .scale = switch (mem.mod) {
+                    .rm => |rm| rm.scale,
+                    .off => undefined,
+                },
             },
-            .scale_index = @as(u32, sib.scale_index.scale) << 0 |
-                @as(u32, if (sib.scale_index.scale > 0)
-                @enumToInt(sib.scale_index.index)
+            .base = switch (mem.base) {
+                .none, .table => undefined,
+                .reg => |reg| @intFromEnum(reg),
+                .frame => |frame_index| @intFromEnum(frame_index),
+                .reloc => |sym_index| sym_index,
+            },
+            .off = switch (mem.mod) {
+                .rm => |rm| @bitCast(rm.disp),
+                .off => |off| @truncate(off),
+            },
+            .extra = if (mem.mod == .off)
+                @intCast(mem.mod.off >> 32)
             else
-                undefined) << 4,
-            .disp = sib.disp,
+                undefined,
         };
     }
 
-    pub fn decode(msib: MemorySib) Memory {
-        const scale = @truncate(u4, msib.scale_index);
-        assert(scale == 0 or std.math.isPowerOfTwo(scale));
-        return .{ .sib = .{
-            .ptr_size = @intToEnum(Memory.PtrSize, msib.ptr_size),
-            .base = switch (@intToEnum(Memory.Base.Tag, msib.base_tag)) {
-                .none => .none,
-                .reg => .{ .reg = @intToEnum(Register, msib.base) },
-                .frame => .{ .frame = @intToEnum(bits.FrameIndex, msib.base) },
+    pub fn decode(mem: Memory) encoder.Instruction.Memory {
+        switch (mem.info.mod) {
+            .rm => {
+                if (mem.info.base == .reg and @as(Register, @enumFromInt(mem.base)) == .rip) {
+                    assert(mem.info.index == .none and mem.info.scale == .@"1");
+                    return encoder.Instruction.Memory.initRip(mem.info.size, @bitCast(mem.off));
+                }
+                return encoder.Instruction.Memory.initSib(mem.info.size, .{
+                    .disp = @bitCast(mem.off),
+                    .base = switch (mem.info.base) {
+                        .none => .none,
+                        .reg => .{ .reg = @enumFromInt(mem.base) },
+                        .frame => .{ .frame = @enumFromInt(mem.base) },
+                        .table => .table,
+                        .reloc => .{ .reloc = mem.base },
+                    },
+                    .scale_index = switch (mem.info.index) {
+                        .none => null,
+                        else => |index| .{ .scale = switch (mem.info.scale) {
+                            inline else => |scale| comptime std.fmt.parseInt(
+                                u4,
+                                @tagName(scale),
+                                10,
+                            ) catch unreachable,
+                        }, .index = index },
+                    },
+                });
             },
-            .scale_index = .{
-                .scale = scale,
-                .index = if (scale > 0) @intToEnum(Register, msib.scale_index >> 4) else undefined,
+            .off => {
+                assert(mem.info.base == .reg);
+                return encoder.Instruction.Memory.initMoffs(
+                    @enumFromInt(mem.base),
+                    @as(u64, mem.extra) << 32 | mem.off,
+                );
             },
-            .disp = msib.disp,
-        } };
-    }
-};
-
-pub const MemoryRip = struct {
-    /// Size of the pointer.
-    ptr_size: u32,
-    /// Displacement value.
-    disp: i32,
-
-    pub fn encode(mem: Memory) MemoryRip {
-        return .{
-            .ptr_size = @enumToInt(mem.rip.ptr_size),
-            .disp = mem.rip.disp,
-        };
-    }
-
-    pub fn decode(mrip: MemoryRip) Memory {
-        return .{ .rip = .{
-            .ptr_size = @intToEnum(Memory.PtrSize, mrip.ptr_size),
-            .disp = mrip.disp,
-        } };
-    }
-};
-
-pub const MemoryMoffs = struct {
-    /// Segment register.
-    seg: u32,
-    /// Absolute offset wrt to the segment register split between MSB and LSB parts much like
-    /// `Imm64` payload.
-    msb: u32,
-    lsb: u32,
-
-    pub fn encode(seg: Register, offset: u64) MemoryMoffs {
-        return .{
-            .seg = @enumToInt(seg),
-            .msb = @truncate(u32, offset >> 32),
-            .lsb = @truncate(u32, offset >> 0),
-        };
-    }
-
-    pub fn decode(moffs: MemoryMoffs) Memory {
-        return .{ .moffs = .{
-            .seg = @intToEnum(Register, moffs.seg),
-            .offset = @as(u64, moffs.msb) << 32 | @as(u64, moffs.lsb) << 0,
-        } };
+        }
     }
 };
 
 pub fn deinit(mir: *Mir, gpa: std.mem.Allocator) void {
     mir.instructions.deinit(gpa);
     gpa.free(mir.extra);
+    gpa.free(mir.table);
     mir.frame_locs.deinit(gpa);
     mir.* = undefined;
 }
@@ -1035,8 +1762,9 @@ pub fn extraData(mir: Mir, comptime T: type, index: u32) struct { data: T, end: 
     inline for (fields) |field| {
         @field(result, field.name) = switch (field.type) {
             u32 => mir.extra[i],
-            i32 => @bitCast(i32, mir.extra[i]),
-            else => @compileError("bad field type"),
+            i32, Memory.Info => @bitCast(mir.extra[i]),
+            bits.FrameIndex, Air.Inst.Index => @enumFromInt(mir.extra[i]),
+            else => @compileError("bad field type: " ++ field.name ++ ": " ++ @typeName(field.type)),
         };
         i += 1;
     }
@@ -1051,16 +1779,37 @@ pub const FrameLoc = struct {
     disp: i32,
 };
 
+pub fn resolveFrameAddr(mir: Mir, frame_addr: bits.FrameAddr) bits.RegisterOffset {
+    const frame_loc = mir.frame_locs.get(@intFromEnum(frame_addr.index));
+    return .{ .reg = frame_loc.base, .off = frame_loc.disp + frame_addr.off };
+}
+
 pub fn resolveFrameLoc(mir: Mir, mem: Memory) Memory {
-    return switch (mem) {
-        .sib => |sib| switch (sib.base) {
-            .none, .reg => mem,
-            .frame => |index| if (mir.frame_locs.len > 0) Memory.sib(sib.ptr_size, .{
-                .base = .{ .reg = mir.frame_locs.items(.base)[@enumToInt(index)] },
-                .disp = mir.frame_locs.items(.disp)[@enumToInt(index)] + sib.disp,
-                .scale_index = mem.scaleIndex(),
-            }) else mem,
-        },
-        .rip, .moffs => mem,
+    return switch (mem.info.base) {
+        .none, .reg, .table, .reloc => mem,
+        .frame => if (mir.frame_locs.len > 0) .{
+            .info = .{
+                .base = .reg,
+                .mod = mem.info.mod,
+                .size = mem.info.size,
+                .index = mem.info.index,
+                .scale = mem.info.scale,
+            },
+            .base = @intFromEnum(mir.frame_locs.items(.base)[mem.base]),
+            .off = @bitCast(mir.frame_locs.items(.disp)[mem.base] + @as(i32, @bitCast(mem.off))),
+            .extra = mem.extra,
+        } else mem,
     };
 }
+
+const assert = std.debug.assert;
+const bits = @import("bits.zig");
+const builtin = @import("builtin");
+const encoder = @import("encoder.zig");
+const std = @import("std");
+
+const Air = @import("../../Air.zig");
+const IntegerBitSet = std.bit_set.IntegerBitSet;
+const InternPool = @import("../../InternPool.zig");
+const Mir = @This();
+const Register = bits.Register;
